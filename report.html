@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DebtLedger — Report</title>
+<style>
+  :root {
+    --ink: #f4f1e8;
+    --paper: #14120f;
+    --paper-raised: #1c1a16;
+    --rule: #3a352c;
+    --gold: #c9a15a;
+    --red-ledger: #a8453a;
+    --green-ledger: #6a8f5e;
+    --muted: #9a9284;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Georgia", "Iowan Old Style", serif;
+    padding: 48px 20px 80px 20px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  .mark {
+    font-family: "Courier New", monospace;
+    letter-spacing: 0.4em;
+    font-size: 12px;
+    color: var(--gold);
+    margin-bottom: 10px;
+  }
+  h1 { font-size: 2rem; font-weight: 400; margin: 0 0 6px 0; }
+  .repo { color: var(--muted); font-family: "Courier New", monospace; font-size: 0.9rem; margin-bottom: 40px; }
+  .error {
+    border: 1px solid var(--red-ledger);
+    color: var(--red-ledger);
+    padding: 18px 20px;
+    border-radius: 3px;
+    font-family: "Courier New", monospace;
+    font-size: 0.9rem;
+  }
+  .item {
+    border-top: 1px solid var(--rule);
+    padding: 26px 0;
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 24px;
+  }
+  .item:last-child { border-bottom: 1px solid var(--rule); }
+  .rank { font-family: "Courier New", monospace; color: var(--muted); font-size: 0.85rem; padding-top: 4px; }
+  .score { color: var(--gold); font-size: 1.4rem; font-weight: bold; }
+  .roi { font-family: "Courier New", monospace; font-size: 0.75rem; color: var(--green-ledger); margin-top: 2px; }
+  .files { margin: 12px 0; font-family: "Courier New", monospace; font-size: 0.85rem; color: var(--ink); line-height: 1.9; }
+  .files span { color: var(--muted); }
+  .costs { display: flex; gap: 28px; font-family: "Courier New", monospace; font-size: 0.8rem; color: var(--muted); margin-top: 8px; }
+  .costs b { color: var(--ink); }
+  .sample {
+    margin-top: 12px;
+    background: var(--paper-raised);
+    border-left: 2px solid var(--gold);
+    padding: 10px 14px;
+    font-family: "Courier New", monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+    white-space: pre-wrap;
+  }
+  .back {
+    display: inline-block;
+    margin-top: 40px;
+    color: var(--gold);
+    font-family: "Courier New", monospace;
+    font-size: 0.85rem;
+    text-decoration: none;
+  }
+  .empty { color: var(--muted); font-family: "Courier New", monospace; padding: 20px 0; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark">DEBTLEDGER</div>
+    <h1>Report</h1>
+    <div class="repo">{{ repo_url }}</div>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% elif top_debt|length == 0 %}
+      <div class="empty">No meaningful duplicated debt found across the files we could read — nice and clean, or the repo is too small to tell yet.</div>
+    {% else %}
+      {% for item in top_debt %}
+      <div class="item">
+        <div class="rank">
+          #{{ loop.index }}
+          <div class="score">{{ item.debt_score }}</div>
+          <div class="roi">{{ item.roi }}x ROI</div>
+        </div>
+        <div>
+          <div class="files">
+            <span>Duplicated across {{ item.places }} files (avg {{ item.avg_touches }} edits each):</span><br>
+            {% for f in item.files %}{{ f }}<br>{% endfor %}
+          </div>
+          <div class="costs">
+            <div>Fix now: <b>{{ item.fix_cost_hours }} hrs</b></div>
+            <div>Cost so far: <b>{{ item.est_future_cost_hours }} hrs</b></div>
+          </div>
+          <div class="sample">{{ item.sample }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    {% endif %}
+
+    <a class="back" href="/">&larr; scan another repo</a>
+  </div>
+</body>
+</html>
