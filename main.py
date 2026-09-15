@@ -30,7 +30,7 @@ from fastapi.templating import Jinja2Templates
 from debt_scorer import score_debt
 
 app = FastAPI(title="DebtLedger")
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=".")
 
 SCAN_ROOT = tempfile.gettempdir()
 
