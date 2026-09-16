@@ -42,33 +42,51 @@ SCAN_ROOT = tempfile.gettempdir()
 # and approve. Nothing here writes to GitHub, nothing here runs on its own.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# PHASE 2: AI-suggested fix.
+# PHASE 2: AI-suggested fix — now works with ANY of these providers, not
+# just Gemini. The visitor picks which one their key is for.
 #
-# Important design rules we agreed on:
-#   1. This NEVER edits the user's actual code — only a suggested plan/diff
-#      as TEXT for a human to read and approve.
-#   2. The Gemini API key belongs to whoever is USING the website, not the
-#      website owner. It's typed in per-request and never saved anywhere
-#      (not to disk, not to a database, not logged) — used once for that
-#      one request, then forgotten.
+# Design rules unchanged:
+#   1. Never edits the user's actual code — text suggestion only.
+#   2. The API key belongs to the visitor, typed in per-request, never
+#      saved anywhere.
 # ---------------------------------------------------------------------------
+import requests
 
-def suggest_fix(files: list, sample_code: str, api_key: str) -> str:
-    """
-    Asks Gemini to propose a refactor plan for a duplicated code block,
-    using the API key the visitor typed in for this one request only.
-    Returns plain text: a short, human-readable plan, NOT actual code
-    that gets applied anywhere automatically.
-    """
-    if not api_key or not api_key.strip():
-        return "(No API key was entered, so no suggestion could be generated.)"
+PROVIDERS = {
+    "gemini": {
+        "label": "Gemini (Google)",
+        "type": "gemini",
+        "default_model": "gemini-3.6-flash",
+    },
+    "openai": {
+        "label": "ChatGPT (OpenAI)",
+        "type": "openai_compatible",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-5.1",
+    },
+    "grok": {
+        "label": "Grok (xAI)",
+        "type": "openai_compatible",
+        "base_url": "https://api.x.ai/v1",
+        "default_model": "grok-4",
+    },
+    "perplexity": {
+        "label": "Perplexity",
+        "type": "openai_compatible",
+        "base_url": "https://api.perplexity.ai",
+        "default_model": "sonar-pro",
+    },
+    "claude": {
+        "label": "Claude (Anthropic)",
+        "type": "anthropic",
+        "base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-sonnet-5",
+    },
+}
 
-    import google.generativeai as genai
-    try:
-        genai.configure(api_key=api_key.strip())
-        model = genai.GenerativeModel("gemini-2.0-flash")
 
-        prompt = f"""You are helping a developer clean up duplicated code in an
+def build_prompt(files: list, sample_code: str) -> str:
+    return f"""You are helping a developer clean up duplicated code in an
 Android/Kotlin app built with Jetpack Compose.
 
 The following code block appears duplicated across these files:
@@ -85,13 +103,67 @@ writing the full final code, just the plan. Be concrete about what to name
 the new shared piece and where it should live. Do not add any preamble,
 just the numbered plan."""
 
-        response = model.generate_content(
-            prompt, request_options={"timeout": 20}
-        )
-        return response.text
+
+def call_gemini(api_key: str, model: str, prompt: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    r = requests.post(url, json=body, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def call_openai_compatible(base_url: str, api_key: str, model: str, prompt: str) -> str:
+    url = f"{base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+    r = requests.post(url, json=body, headers=headers, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def call_anthropic(api_key: str, model: str, prompt: str) -> str:
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": model,
+        "max_tokens": 600,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    r = requests.post(url, json=body, headers=headers, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    return data["content"][0]["text"]
+
+
+def suggest_fix(files: list, sample_code: str, provider: str, api_key: str, model_override: str = "") -> str:
+    if not api_key or not api_key.strip():
+        return "(No API key was entered, so no suggestion could be generated.)"
+
+    provider_info = PROVIDERS.get(provider)
+    if not provider_info:
+        return f"(Unknown provider: {provider})"
+
+    model = model_override.strip() if model_override and model_override.strip() else provider_info["default_model"]
+    prompt = build_prompt(files, sample_code)
+    api_key = api_key.strip()
+
+    try:
+        if provider_info["type"] == "gemini":
+            return call_gemini(api_key, model, prompt)
+        elif provider_info["type"] == "openai_compatible":
+            return call_openai_compatible(provider_info["base_url"], api_key, model, prompt)
+        elif provider_info["type"] == "anthropic":
+            return call_anthropic(api_key, model, prompt)
     except Exception as e:
-        return (f"(Couldn't get a suggestion — the API key may be invalid, or "
-                f"out of free quota for today. Error detail: {e})")
+        return (f"(Couldn't get a suggestion from {provider_info['label']} — the key may be "
+                f"invalid, out of quota, or the model name '{model}' may have changed. "
+                f"Error detail: {e})")
 
 
 def clone_repo(github_url: str) -> str:
@@ -130,7 +202,7 @@ def scan(request: Request, repo_url: str = Form(...)):
     return templates.TemplateResponse(
         request=request,
         name="report.html",
-        context={"repo_url": repo_url, "top_debt": top_debt, "error": error},
+        context={"repo_url": repo_url, "top_debt": top_debt, "error": error, "providers": PROVIDERS},
     )
 
 
@@ -139,14 +211,21 @@ def suggest_fix_route(
     request: Request,
     files: str = Form(...),
     sample: str = Form(...),
+    provider: str = Form("gemini"),
     api_key: str = Form(""),
+    model_override: str = Form(""),
 ):
     file_list = files.split("|||")
-    plan = suggest_fix(file_list, sample, api_key)
+    plan = suggest_fix(file_list, sample, provider, api_key, model_override)
     return templates.TemplateResponse(
         request=request,
         name="suggestion.html",
-        context={"files": file_list, "sample": sample, "plan": plan},
+        context={
+            "files": file_list,
+            "sample": sample,
+            "plan": plan,
+            "provider_label": PROVIDERS.get(provider, {}).get("label", provider),
+        },
     )
 
 
