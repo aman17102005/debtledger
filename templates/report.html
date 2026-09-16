@@ -102,6 +102,11 @@
     background: var(--gold); color: #14120f; border: none; padding: 0 20px;
     font-family: "Courier New", monospace; font-size: 0.8rem; font-weight: bold; border-radius: 3px; cursor: pointer;
   }
+  .provider-select, .model-input {
+    width: 100%; background: var(--paper); border: 1px solid var(--rule); color: var(--ink);
+    padding: 10px 12px; font-family: "Courier New", monospace; font-size: 0.85rem; border-radius: 3px;
+  }
+  .provider-select:focus, .model-input:focus { outline: none; border-color: var(--gold); }
 </style>
 </head>
 <body>
@@ -137,11 +142,19 @@
             <form action="/suggest-fix" method="post" class="key-form">
               <input type="hidden" name="files" value="{{ item.files | join('|||') }}">
               <input type="hidden" name="sample" value="{{ item.sample }}">
-              <label class="key-label">YOUR GEMINI API KEY (free, from aistudio.google.com — never saved, used once)</label>
+              <label class="key-label">AI PROVIDER</label>
+              <select name="provider" class="provider-select">
+                {% for key, info in providers.items() %}
+                <option value="{{ key }}">{{ info.label }}</option>
+                {% endfor %}
+              </select>
+              <label class="key-label" style="margin-top: 10px;">YOUR API KEY (never saved, used once)</label>
               <div class="row">
-                <input type="password" name="api_key" placeholder="AIza..." required>
+                <input type="password" name="api_key" placeholder="paste your key" required>
                 <button type="submit" class="go-btn">GO</button>
               </div>
+              <label class="key-label" style="margin-top: 10px;">MODEL NAME (optional — leave blank for the default)</label>
+              <input type="text" name="model_override" class="model-input" placeholder="e.g. gpt-5.1, leave blank for default">
             </form>
           </details>
         </div>
