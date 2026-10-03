@@ -14,15 +14,9 @@
   .wrap { max-width: 700px; margin: 0 auto; }
   .mark { font-family: "Courier New", monospace; letter-spacing: 0.4em; font-size: 12px; color: var(--gold); margin-bottom: 10px; }
   h1 { font-size: 2rem; font-weight: 400; margin: 0 0 24px 0; }
-  .badge {
-    display: inline-block; border: 1px solid var(--green-ledger); color: var(--green-ledger);
-    font-family: "Courier New", monospace; font-size: 0.7rem; padding: 4px 10px; border-radius: 3px; margin-bottom: 24px;
-  }
+  .badge { display: inline-block; border: 1px solid var(--green-ledger); color: var(--green-ledger); font-family: "Courier New", monospace; font-size: 0.7rem; padding: 4px 10px; border-radius: 3px; margin-bottom: 24px; }
   .files { font-family: "Courier New", monospace; font-size: 0.85rem; color: var(--muted); line-height: 1.9; margin-bottom: 28px; }
-  .plan {
-    background: var(--paper-raised); border-left: 2px solid var(--gold);
-    padding: 24px 26px; white-space: pre-wrap; line-height: 1.7; font-size: 0.95rem;
-  }
+  .plan { background: var(--paper-raised); border-left: 2px solid var(--gold); padding: 24px 26px; white-space: pre-wrap; line-height: 1.7; font-size: 0.95rem; }
   .back { display: inline-block; margin-top: 36px; color: var(--gold); font-family: "Courier New", monospace; font-size: 0.85rem; text-decoration: none; }
 </style>
 </head>
@@ -32,10 +26,7 @@
     <h1>Suggested fix</h1>
     <div class="badge">⚠ SUGGESTION ONLY — nothing in your code has been changed</div>
     <div class="files" style="margin-bottom: 4px;">Answered by: {{ provider_label }}</div>
-    <div class="files">
-      Based on duplication across:<br>
-      {% for f in files %}{{ f }}<br>{% endfor %}
-    </div>
+    <div class="files">Based on duplication across:<br>{% for f in files %}{{ f }}<br>{% endfor %}</div>
     <div class="plan">{{ plan }}</div>
     <a class="back" href="javascript:history.back()">&larr; back to report</a>
   </div>
