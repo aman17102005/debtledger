@@ -1,12 +1,14 @@
 """
-CodeSweep (formerly DebtLedger) — Website
+CodeSweep — Website
 
-Two ways to scan:
-  1. Paste a public GitHub repo URL — reads code + git history.
-  2. Upload code files directly — reads code only (no history exists for
-     uploads). Uploaded files are processed fully in memory and are
-     NEVER written to disk or stored anywhere — read once, scanned, and
-     discarded as soon as the response is sent.
+Scan modes:
+  1. Paste a public GitHub repo URL — reads code + git history, saves
+     result so repeat scans show what changed since last time, and
+     powers a live README badge.
+  2. Upload code files directly — reads code only, nothing ever stored.
+
+Checks run: duplicated code, overly complex functions, possibly dead
+code — combined into one health score.
 """
 
 import os
@@ -14,18 +16,29 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-
-from fastapi import FastAPI, Form, Request, UploadFile, File
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from typing import List
 
+from fastapi import FastAPI, Form, Request, UploadFile, File
+from fastapi.responses import HTMLResponse, Response
+from fastapi.templating import Jinja2Templates
+
 from debt_scorer import score_debt, score_uploaded_debt
+from analyzer import analyze_disk_repo, analyze_uploaded
+from health_score import compute_health_score
+from history_store import save_scan, get_previous_scan, get_latest_scan
+from exporters import build_pdf, build_badge_svg
 
 app = FastAPI(title="CodeSweep")
 templates = Jinja2Templates(directory="templates")
 
 SCAN_ROOT = tempfile.gettempdir()
+
+
+def normalize_repo_url(url: str) -> str:
+    url = url.strip().rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    return url
 
 
 def clone_repo(github_url: str) -> str:
@@ -41,68 +54,109 @@ def home(request: Request):
     return templates.TemplateResponse(request=request, name="home.html", context={})
 
 
-@app.post("/scan", response_class=HTMLResponse)
-def scan(request: Request, repo_url: str = Form(...)):
-    error = None
-    top_debt = []
-    repo_dir = None
+def _run_full_repo_scan(repo_url: str):
+    norm_url = normalize_repo_url(repo_url)
+    repo_dir = clone_repo(repo_url)
     try:
-        repo_dir = clone_repo(repo_url)
         if not os.path.isdir(os.path.join(repo_dir, ".git")):
-            error = "Couldn't read that repo — check the link is a public GitHub repo URL."
-        else:
-            top_debt = score_debt(repo_dir, top_n=10)
-    except Exception as e:
-        error = f"Something went wrong scanning that repo: {e}"
+            return None, "Couldn't read that repo — check the link is a public GitHub repo URL."
+
+        top_debt = score_debt(repo_dir, top_n=10)
+        complex_fns, dead_fns, file_contents = analyze_disk_repo(repo_dir)
+        health = compute_health_score(len(top_debt), len(complex_fns), len(dead_fns), len(file_contents))
+
+        save_scan(norm_url, health)
+        previous = get_previous_scan(norm_url)
+
+        return {
+            "repo_url": repo_url, "norm_url": norm_url, "top_debt": top_debt,
+            "complex_fns": complex_fns[:10], "dead_fns": dead_fns[:10],
+            "health": health, "previous": previous,
+        }, None
     finally:
-        if repo_dir and os.path.isdir(repo_dir):
+        if os.path.isdir(repo_dir):
             shutil.rmtree(repo_dir, ignore_errors=True)
 
-    return templates.TemplateResponse(
-        request=request, name="report.html",
-        context={"repo_url": repo_url, "top_debt": top_debt, "error": error, "providers": PROVIDERS},
+
+@app.post("/scan", response_class=HTMLResponse)
+def scan(request: Request, repo_url: str = Form(...)):
+    try:
+        result, error = _run_full_repo_scan(repo_url)
+    except Exception as e:
+        result, error = None, f"Something went wrong scanning that repo: {e}"
+
+    context = {"repo_url": repo_url, "error": error, "providers": PROVIDERS,
+               "top_debt": [], "complex_fns": [], "dead_fns": [], "health": None, "previous": None}
+    if result:
+        context.update(result)
+
+    return templates.TemplateResponse(request=request, name="report.html", context=context)
+
+
+@app.post("/export-pdf")
+def export_pdf(repo_url: str = Form(...)):
+    try:
+        result, error = _run_full_repo_scan(repo_url)
+    except Exception as e:
+        result, error = None, str(e)
+
+    if not result:
+        return Response(content=f"Could not generate PDF: {error}", status_code=400)
+
+    pdf_bytes = build_pdf(result["repo_url"], result["health"], result["top_debt"],
+                            result["complex_fns"], result["dead_fns"])
+    return Response(
+        content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=codesweep_report.pdf"},
     )
+
+
+@app.get("/badge/{owner}/{repo}")
+def badge(owner: str, repo: str):
+    norm_url = normalize_repo_url(f"https://github.com/{owner}/{repo}")
+    latest = get_latest_scan(norm_url)
+    score = latest["score"] if latest else -1
+    svg = build_badge_svg(score)
+    return Response(content=svg, media_type="image/svg+xml",
+                     headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/scan-files", response_class=HTMLResponse)
 async def scan_files(request: Request, files: List[UploadFile] = File(...)):
-    """
-    Reads every uploaded file straight into memory, scans for duplication,
-    then the bytes go out of scope and are gone — nothing is written to
-    disk, nothing is saved to any database.
-    """
     error = None
     top_debt = []
     skipped = []
     filenames = []
+    complex_fns = []
+    dead_fns = []
+    health = None
 
     try:
         in_memory_files = []
         for f in files:
-            raw = await f.read()           # read into memory only
+            raw = await f.read()
             in_memory_files.append((f.filename, raw))
             filenames.append(f.filename)
         if not in_memory_files:
             error = "No files were uploaded."
         else:
             top_debt, skipped = score_uploaded_debt(in_memory_files, top_n=10)
+            complex_fns, dead_fns, file_contents = analyze_uploaded(in_memory_files)
+            complex_fns, dead_fns = complex_fns[:10], dead_fns[:10]
+            health = compute_health_score(len(top_debt), len(complex_fns), len(dead_fns), len(in_memory_files))
     except Exception as e:
         error = f"Something went wrong scanning those files: {e}"
-    # nothing to clean up on disk — nothing was ever written there
 
     return templates.TemplateResponse(
         request=request, name="upload_report.html",
         context={
             "filenames": filenames, "top_debt": top_debt, "skipped": skipped,
+            "complex_fns": complex_fns, "dead_fns": dead_fns, "health": health,
             "error": error, "providers": PROVIDERS,
         },
     )
 
 
-# ---------------------------------------------------------------------------
-# AI-suggested fix — works with any of 5 providers, visitor's own key,
-# never saved. Text suggestion only, never edits real code.
-# ---------------------------------------------------------------------------
 import requests
 
 PROVIDERS = {
