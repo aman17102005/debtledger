@@ -43,10 +43,22 @@ def score_debt(repo_path: str, top_n: int = 10):
         est_future_cost_hours = round(sum(touch_counts) * 0.25, 1)
         roi = round(est_future_cost_hours / fix_cost_hours, 1) if fix_cost_hours else 0
 
+        # Debt timeline: when each file involved first shows up in the git
+        # history we read. This is an honest approximation — it tells us when
+        # each file was added, not the exact moment the duplicated block
+        # was pasted into it.
+        timeline = []
+        for f in files_involved:
+            first = history.get(f, {}).get("first_seen")
+            if first:
+                timeline.append({"date": first.strftime("%d %b %Y"), "sort": first.timestamp(), "file": f.split("/")[-1]})
+        timeline.sort(key=lambda t: t["sort"])
+
         scored.append({
             "files": files_involved, "places": places, "avg_touches": round(avg_touches, 1),
             "debt_score": round(debt_score, 1), "fix_cost_hours": fix_cost_hours,
             "est_future_cost_hours": est_future_cost_hours, "roi": roi, "sample": info["sample"],
+            "timeline": timeline,
         })
 
     scored.sort(key=lambda x: -x["debt_score"])
