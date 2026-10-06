@@ -29,14 +29,28 @@ from pathlib import Path
 
 CODE_EXTENSIONS = {".kt", ".java", ".py", ".js", ".ts", ".tsx", ".jsx", ".swift", ".go"}
 
-# Function-definition patterns per rough language family. Each captures the
-# function name in group 1.
-FUNC_PATTERNS = [
-    re.compile(r'\bfun\s+(\w+)\s*\('),                      # Kotlin
-    re.compile(r'\bdef\s+(\w+)\s*\('),                       # Python
-    re.compile(r'\bfunction\s+(\w+)\s*\('),                  # JS/TS
-    re.compile(r'\b(?:public|private|protected)?\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\([^;]*\)\s*\{'),  # Java/C-like
-]
+# Function-definition patterns, chosen by file type so one language's
+# syntax doesn't produce false matches in another.
+KOTLIN_PATTERN = re.compile(r'\bfun\s+(?:<[^>]*>\s*)?(?:[\w<>?,\s]+\.)?(\w+)\s*\(')
+PYTHON_PATTERN = re.compile(r'\bdef\s+(\w+)\s*\(')
+JS_PATTERN = re.compile(r'\bfunction\s+(\w+)\s*\(')
+C_LIKE_PATTERN = re.compile(r'\b(?:public|private|protected|static|final|void|int|long|double|float|boolean|String|[A-Z]\w*)\s+(\w+)\s*\([^;{]*\)\s*(?:throws [\w., ]+)?\{')
+
+PATTERNS_BY_EXT = {
+    ".kt": [KOTLIN_PATTERN],
+    ".py": [PYTHON_PATTERN],
+    ".js": [JS_PATTERN], ".jsx": [JS_PATTERN], ".ts": [JS_PATTERN], ".tsx": [JS_PATTERN],
+    ".java": [C_LIKE_PATTERN], ".swift": [re.compile(r'\bfunc\s+(\w+)\s*\(')],
+    ".go": [re.compile(r'\bfunc\s+(?:\([^)]*\)\s*)?(\w+)\s*\(')],
+}
+
+# Words that can look like a function name to a simple text pattern but
+# are really language keywords or common built-in helpers.
+NOT_REAL_FUNCTIONS = {
+    "if", "else", "for", "while", "when", "switch", "catch", "return", "try",
+    "remember", "rememberSaveable", "derivedStateOf", "mutableStateOf", "launch",
+    "async", "lazy", "run", "let", "apply", "also", "with", "use",
+}
 
 DECISION_KEYWORDS = re.compile(
     r'\b(if|else if|else|when|switch|case|for|while|catch)\b|&&|\|\|'
@@ -49,7 +63,26 @@ FRAMEWORK_WHITELIST = {
     "onViewCreated", "onCreateView", "onBindViewHolder", "onCreateViewHolder",
     "__init__", "__str__", "__repr__", "setUp", "tearDown", "componentDidMount",
     "render", "build", "equals", "hashCode", "toString", "compareTo",
+    # Android pieces the system calls by itself
+    "doWork", "onReceive", "onBind", "onStartCommand", "onNewIntent", "onActivityResult",
+    "onRequestPermissionsResult", "onSaveInstanceState", "onConfigurationChanged",
+    "onBackPressed", "onCreateOptionsMenu", "onOptionsItemSelected", "attachBaseContext",
 }
+
+# Parts of a file path that mean "this is test code, not real app code".
+TEST_PATH_PARTS = {"test", "tests", "androidtest", "__tests__", "spec", "specs"}
+
+
+def is_test_file(path: str) -> bool:
+    parts = [p.lower() for p in re.split(r"[\\/]", path)]
+    if any(p in TEST_PATH_PARTS for p in parts[:-1]):
+        return True
+    name = parts[-1]
+    return (
+        name.startswith("test_") or name.endswith("_test.py")
+        or name.endswith(("test.kt", "tests.kt", "test.java", "tests.java"))
+        or ".test." in name or ".spec." in name
+    )
 
 COMPLEXITY_THRESHOLD = 8   # decision points before we call a function "complex"
 
@@ -63,20 +96,19 @@ def iter_code_files(root: str):
                 yield os.path.join(dirpath, fname)
 
 
-def extract_functions(text: str):
+def extract_functions(text: str, filename: str = ""):
     """
     Very approximate function-boundary extraction: finds each function
-    definition line, then grabs a chunk of the following lines up to the
-    next top-level function definition (or end of file) as that
-    function's rough body. Good enough for a V1 complexity/dead-code
-    signal, not a real parser.
+    definition line, then grabs the lines up to the next definition as that
+    function's rough body. Good enough for a V1 signal, not a real parser.
     """
+    patterns = PATTERNS_BY_EXT.get(Path(filename).suffix, [KOTLIN_PATTERN, PYTHON_PATTERN, JS_PATTERN])
     lines = text.splitlines()
     matches = []
     for i, line in enumerate(lines):
-        for pattern in FUNC_PATTERNS:
+        for pattern in patterns:
             m = pattern.search(line)
-            if m:
+            if m and m.group(1) not in NOT_REAL_FUNCTIONS:
                 matches.append((i, m.group(1)))
                 break
 
@@ -84,7 +116,10 @@ def extract_functions(text: str):
     for idx, (start_line, name) in enumerate(matches):
         end_line = matches[idx + 1][0] if idx + 1 < len(matches) else len(lines)
         body = "\n".join(lines[start_line:end_line])
-        functions.append({"name": name, "start_line": start_line + 1, "body": body})
+        header = lines[start_line]
+        above = " ".join(lines[max(0, start_line - 3):start_line])
+        functions.append({"name": name, "start_line": start_line + 1, "body": body,
+                          "header": header, "above": above})
     return functions
 
 
@@ -95,7 +130,9 @@ def analyze_complexity(file_contents: list):
     """
     results = []
     for filename, text in file_contents:
-        for fn in extract_functions(text):
+        if is_test_file(filename):
+            continue
+        for fn in extract_functions(text, filename):
             decisions = len(DECISION_KEYWORDS.findall(fn["body"]))
             if decisions >= COMPLEXITY_THRESHOLD:
                 results.append({
@@ -117,9 +154,19 @@ def analyze_dead_code(file_contents: list):
     results = []
 
     for filename, text in file_contents:
-        for fn in extract_functions(text):
+        if is_test_file(filename):
+            continue   # test code is allowed to be "uncalled" — the test runner calls it
+        for fn in extract_functions(text, filename):
             name = fn["name"]
             if name in FRAMEWORK_WHITELIST or name.startswith("test") or name.startswith("_"):
+                continue
+            if name.startswith("Preview") or name.endswith("Preview"):
+                continue
+            # "override" functions and annotated entry points are called by
+            # the framework, not by our own code
+            if re.search(r"\boverride\b", fn["header"]):
+                continue
+            if re.search(r"@(Preview|Test|Override|JvmStatic|BindingAdapter|OnLifecycleEvent|Provides|Binds)", fn["above"] + " " + fn["header"]):
                 continue
             # count occurrences of the name as a whole word, anywhere in the
             # codebase, then subtract 1 for its own definition line
@@ -137,7 +184,8 @@ def analyze_disk_repo(root: str):
         rel = os.path.relpath(filepath, root)
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             file_contents.append((rel, f.read()))
-    return analyze_complexity(file_contents), analyze_dead_code(file_contents), file_contents
+    app_files = [(f, t) for f, t in file_contents if not is_test_file(f)]
+    return analyze_complexity(file_contents), analyze_dead_code(file_contents), app_files
 
 
 def analyze_uploaded(uploaded_files: list):
@@ -155,4 +203,5 @@ def analyze_uploaded(uploaded_files: list):
             continue
         if Path(filename).suffix in CODE_EXTENSIONS:
             file_contents.append((filename, text))
-    return analyze_complexity(file_contents), analyze_dead_code(file_contents), file_contents
+    app_files = [(f, t) for f, t in file_contents if not is_test_file(f)]
+    return analyze_complexity(file_contents), analyze_dead_code(file_contents), app_files
