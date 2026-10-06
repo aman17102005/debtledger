@@ -60,6 +60,23 @@
   .go-btn:hover { opacity: 0.9; }
   .provider-select, .model-input { width: 100%; background: var(--paper); border: 1px solid var(--rule); color: var(--ink); padding: 10px 12px; font-family: "Courier New", monospace; font-size: 0.85rem; border-radius: 3px; }
   .provider-select:focus, .model-input:focus { outline: none; border-color: var(--gold); }
+
+  .budget { background: var(--paper-raised); border-radius: 6px; padding: 20px 24px; margin: 8px 0 18px 0; }
+  .budget-title { font-family: "Courier New", monospace; font-size: 0.72rem; letter-spacing: 0.15em; color: var(--gold); margin-bottom: 10px; }
+  .budget-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-family: "Courier New", monospace; font-size: 0.85rem; color: var(--muted); }
+  .budget-row input { width: 80px; background: var(--paper); border: 1px solid var(--rule); color: var(--ink); padding: 8px 10px; font-family: "Courier New", monospace; border-radius: 3px; }
+  .budget-row input:focus { outline: none; border-color: var(--gold); }
+  .budget-result { margin-top: 12px; font-family: "Courier New", monospace; font-size: 0.82rem; color: var(--ink); line-height: 1.7; }
+  .budget-result b { color: var(--green-ledger); }
+  .item.picked { background: rgba(106,143,94,0.10); box-shadow: -3px 0 0 var(--green-ledger); padding-left: 12px; }
+  .pick-tag { display: none; font-family: "Courier New", monospace; font-size: 0.7rem; color: var(--green-ledger); margin-top: 6px; }
+  .item.picked .pick-tag { display: block; }
+  .timeline { margin: 14px 0 6px 0; border-left: 1px solid var(--rule); padding-left: 16px; }
+  .timeline-title { font-family: "Courier New", monospace; font-size: 0.68rem; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 8px; }
+  .tl-row { position: relative; font-family: "Courier New", monospace; font-size: 0.78rem; color: var(--ink); padding: 3px 0; }
+  .tl-row::before { content: ""; position: absolute; left: -21px; top: 9px; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
+  .tl-row span { color: var(--muted); display: inline-block; width: 92px; }
+  .tl-note { font-family: "Courier New", monospace; font-size: 0.66rem; color: var(--muted); margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -103,16 +120,34 @@
       {% endif %}
 
       <h2>Duplicated Code</h2>
+      {% if top_debt|length > 0 %}
+      <div class="budget">
+        <div class="budget-title">I HAVE LIMITED TIME</div>
+        <div class="budget-row">
+          I have <input type="number" id="hoursInput" value="3" min="0.5" step="0.5"> hours.
+          <button type="button" class="go-btn" style="padding: 9px 16px;" onclick="pickFixes()">PICK MY FIXES</button>
+        </div>
+        <div class="budget-result" id="budgetResult"></div>
+      </div>
+      {% endif %}
       {% if top_debt|length == 0 %}
         <div class="empty">None found.</div>
       {% else %}
         {% for item in top_debt %}
-        <div class="item">
+        <div class="item" data-fix="{{ item.fix_cost_hours }}" data-save="{{ item.est_future_cost_hours }}" data-rank="{{ loop.index }}">
           <div class="rank">#{{ loop.index }}<div class="score">{{ item.debt_score }}</div><div class="roi">{{ item.roi }}x ROI</div></div>
           <div>
             <div class="files"><span>Duplicated across {{ item.places }} files (avg {{ item.avg_touches }} edits each):</span><br>{% for f in item.files %}{{ f }}<br>{% endfor %}</div>
             <div class="costs"><div>Fix now: <b>{{ item.fix_cost_hours }} hrs</b></div><div>Cost so far: <b>{{ item.est_future_cost_hours }} hrs</b></div></div>
             <div class="sample">{{ item.sample }}</div>
+            {% if item.timeline %}
+            <div class="timeline">
+              <div class="timeline-title">HOW IT SPREAD</div>
+              {% for t in item.timeline %}<div class="tl-row"><span>{{ t.date }}</span>{{ t.file }} added</div>{% endfor %}
+              <div class="tl-note">Based on when each file first appears in the history we read.</div>
+            </div>
+            {% endif %}
+            <div class="pick-tag">✓ PICKED FOR YOUR TIME BUDGET</div>
             <details class="suggest-box">
               <summary class="suggest-btn">SUGGEST A FIX →</summary>
               <form action="/suggest-fix" method="post" class="key-form">
@@ -155,5 +190,29 @@
 
     <a class="back" href="/">&larr; scan another repo</a>
   </div>
+<script>
+function pickFixes() {
+  var hours = parseFloat(document.getElementById('hoursInput').value) || 0;
+  var items = Array.prototype.slice.call(document.querySelectorAll('.item[data-fix]'));
+  items.forEach(function (el) { el.classList.remove('picked'); });
+  var n = items.length, bestMask = 0, bestSave = -1, bestFix = 0;
+  // Try every combination (there are at most 10 items) and keep the one that
+  // saves the most future hours while fitting inside the time you have.
+  for (var mask = 0; mask < (1 << n); mask++) {
+    var fix = 0, save = 0;
+    for (var i = 0; i < n; i++) {
+      if (mask & (1 << i)) { fix += parseFloat(items[i].dataset.fix); save += parseFloat(items[i].dataset.save); }
+    }
+    if (fix <= hours && save > bestSave) { bestSave = save; bestMask = mask; bestFix = fix; }
+  }
+  var out = document.getElementById('budgetResult');
+  if (bestMask === 0) { out.innerHTML = 'Nothing fits in ' + hours + ' hours. Try a little more time.'; return; }
+  var ranks = [];
+  for (var j = 0; j < n; j++) {
+    if (bestMask & (1 << j)) { items[j].classList.add('picked'); ranks.push('#' + items[j].dataset.rank); }
+  }
+  out.innerHTML = 'Fix ' + ranks.join(', ') + ' &mdash; about <b>' + bestFix.toFixed(1) + ' hrs</b> of work, which could save around <b>' + bestSave.toFixed(1) + ' hrs</b> later. (Estimates, not exact.)';
+}
+</script>
 </body>
 </html>
