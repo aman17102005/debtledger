@@ -44,7 +44,7 @@ def normalize_repo_url(url: str) -> str:
 def clone_repo(github_url: str) -> str:
     scan_id = str(uuid.uuid4())[:8]
     dest = os.path.join(SCAN_ROOT, f"codesweep_{scan_id}")
-    subprocess.run(["git", "clone", "--depth", "50", github_url, dest],
+    subprocess.run(["git", "clone", "--depth", "200", github_url, dest],
                     capture_output=True, text=True, timeout=120)
     return dest
 
